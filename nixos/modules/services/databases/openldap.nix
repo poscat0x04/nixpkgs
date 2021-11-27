@@ -220,10 +220,7 @@ in {
   meta.maintainers = with lib.maintainers; [ mic92 kwohlfahrt ];
 
   config = mkIf cfg.enable {
-    assertions = map (opt: {
-      assertion = ((getAttr opt cfg) != "_mkMergedOptionModule") -> (cfg.database != "_mkMergedOptionModule");
-      message = "Legacy OpenLDAP option `services.openldap.${opt}` requires `services.openldap.database` (use value \"mdb\" if unsure)";
-    }) legacyOptions ++ map (dn: {
+    assertions = map (dn: {
       assertion = dataDirs ? "${dn}";
       message = ''
         declarative DB ${dn} does not exist in "servies.openldap.settings" or it exists but the "olcDbDirectory"
