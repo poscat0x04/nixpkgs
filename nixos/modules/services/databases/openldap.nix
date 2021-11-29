@@ -220,13 +220,19 @@ in {
   meta.maintainers = with lib.maintainers; [ mic92 kwohlfahrt ];
 
   config = mkIf cfg.enable {
-    assertions = map (dn: {
+    assertions = (map (dn: {
       assertion = dataDirs ? "${dn}";
       message = ''
-        declarative DB ${dn} does not exist in "servies.openldap.settings" or it exists but the "olcDbDirectory"
+        declarative DB ${dn} does not exist in "services.openldap.settings" or it exists but the "olcDbDirectory"
         is not prefixed by "/var/lib/openldap/"
       '';
-    }) declarativeDNs;
+    }) declarativeDNs) ++ (map (dir: {
+      # FIXME: Decide if config is going to live in /etc or /var
+      assertion = !(hasPrefix "slapd.d" dir);
+      message = ''
+        database path may not be "/var/lib/openldap/slapd.d", this path is used for configuration.
+      '';
+    }) (attrValues dataDirs));
     environment.systemPackages = [ openldap ];
 
     # Literal attributes must always be set
@@ -246,35 +252,41 @@ in {
       description = "LDAP server";
       wantedBy = [ "multi-user.target" ];
       after = [ "network.target" ];
-      preStart = let
-        settingsFile = pkgs.writeText "config.ldif" (lib.concatStringsSep "\n" (attrsToLdif "cn=config" cfg.settings));
-        dataFiles = lib.mapAttrs (dn: contents: pkgs.writeText "${dn}.ldif" contents) cfg.declarativeContents;
-        mkLoadScript = dn: let
-          dataDir = lib.escapeShellArg ("/var/lib/openldap/" + getAttr dn dataDirs);
-        in  ''
-          rm -rf ${dataDir}/*
-          ${openldap}/bin/slapadd -F ${lib.escapeShellArg configDir} -b ${dn} -l ${getAttr dn dataFiles}
+      serviceConfig = let
+        # This cannot be built in a derivation, because it needs filesystem access for file
+        writeConfig = let
+          settingsFile = pkgs.writeText "config.ldif" (lib.concatStringsSep "\n" (attrsToLdif "cn=config" cfg.settings));
+        in pkgs.writeShellScript "openldap-pre" ''
+          ${openldap}/bin/slapadd -F /etc/openldap -bcn=config -l ${settingsFile}
+          chgrp -R ${cfg.user} /etc/openldap
+          chmod -R g+r /etc/openldap/cn=config.ldif /etc/openldap/cn=config
         '';
-      in ''
-        ${lib.optionalString useDefaultConfDir ''
-          rm -rf ${configDir}/*
-          ${openldap}/bin/slapadd -F ${configDir} -bcn=config -l ${settingsFile}
-        ''}
-
-        ${lib.concatStrings (map mkLoadScript declarativeDNs)}
-        ${openldap}/bin/slaptest -u -F ${lib.escapeShellArg configDir}
-      '';
-      serviceConfig = {
+        writeContents = let
+          dataFiles = lib.mapAttrs (dn: contents: pkgs.writeText "${dn}.ldif" contents) cfg.declarativeContents;
+          mkLoadScript = dn: ''
+            rm -rf /var/lib/openldap/${lib.escapeShellArg (getAttr dn dataDirs)}/*
+            ${openldap}/bin/slapadd -F /etc/openldap -b ${dn} -l ${getAttr dn dataFiles}
+          '';
+        in pkgs.writeShellScript "openldap-pre" ''
+            ${lib.concatStrings (map mkLoadScript declarativeDNs)}
+            ${openldap}/bin/slaptest -u -F /etc/openldap
+        '';
+      in {
         User = cfg.user;
         Group = cfg.group;
         Type = "forking";
+        ExecStartPre = [
+          "+${writeConfig}"
+          "${writeContents}"
+        ];
         ExecStart = lib.escapeShellArgs ([
-          "${openldap}/libexec/slapd" "-F" configDir
+          "${openldap}/libexec/slapd" "-F" "/etc/openldap"
           "-h" (lib.concatStringsSep " " cfg.urlList)
         ]);
         StateDirectory = [ "openldap/slapd.d" ] ++ additionalStateDirectories;
         StateDirectoryMode = "700";
         RuntimeDirectory = "openldap";
+        ConfigurationDirectory = "openldap";
         AmbientCapabilities = [ "CAP_NET_BIND_SERVICE" ];
         CapabilityBoundingSet = [ "CAP_NET_BIND_SERVICE" ];
         PIDFile = cfg.settings.attrs.olcPidFile;
