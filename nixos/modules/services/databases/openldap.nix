@@ -6,7 +6,7 @@ let
   legacyOptions = [ "rootpwFile" "suffix" "dataDir" "rootdn" "rootpw" ];
   openldap = cfg.package;
   useDefaultConfDir = cfg.configDir == null;
-  configDir = if cfg.configDir != null then cfg.configDir else "/var/lib/openldap/slapd.d";
+  configDir = if cfg.configDir != null then cfg.configDir else "$CONFIGURATION_DIRECTORY";
 
   dbSettings = filterAttrs (name: value: hasPrefix "olcDatabase=" name) cfg.settings.children;
   dataDirs = mapAttrs' (_: value: nameValuePair value.attrs.olcSuffix (removePrefix "/var/lib/openldap/" value.attrs.olcDbDirectory))
@@ -256,31 +256,30 @@ in {
         # This cannot be built in a derivation, because it needs filesystem access for file
         writeConfig = let
           settingsFile = pkgs.writeText "config.ldif" (lib.concatStringsSep "\n" (attrsToLdif "cn=config" cfg.settings));
-        in pkgs.writeShellScript "openldap-pre" ''
-          ${openldap}/bin/slapadd -F /etc/openldap -bcn=config -l ${settingsFile}
-          chgrp -R ${cfg.user} /etc/openldap
-          chmod -R g+r /etc/openldap/cn=config.ldif /etc/openldap/cn=config
+        in pkgs.writeShellScript "openldap-config" ''
+          ${openldap}/bin/slapadd -F ${configDir} -bcn=config -l ${settingsFile}
+          chgrp -R ${cfg.group} ${configDir}
+          chmod -R g+r ${configDir}
         '';
         writeContents = let
           dataFiles = lib.mapAttrs (dn: contents: pkgs.writeText "${dn}.ldif" contents) cfg.declarativeContents;
           mkLoadScript = dn: ''
             rm -rf /var/lib/openldap/${lib.escapeShellArg (getAttr dn dataDirs)}/*
-            ${openldap}/bin/slapadd -F /etc/openldap -b ${dn} -l ${getAttr dn dataFiles}
+            ${openldap}/bin/slapadd -F ${configDir} -b ${dn} -l ${getAttr dn dataFiles}
           '';
-        in pkgs.writeShellScript "openldap-pre" ''
+        in pkgs.writeShellScript "openldap-data" ''
             ${lib.concatStrings (map mkLoadScript declarativeDNs)}
-            ${openldap}/bin/slaptest -u -F /etc/openldap
+            ${openldap}/bin/slaptest -u -F ${configDir}
         '';
       in {
         User = cfg.user;
         Group = cfg.group;
         Type = "forking";
-        ExecStartPre = [
-          "+${writeConfig}"
+        ExecStartPre = (lib.optional (cfg.configDir == null) "+${writeConfig}") ++ [
           "${writeContents}"
         ];
         ExecStart = lib.escapeShellArgs ([
-          "${openldap}/libexec/slapd" "-F" "/etc/openldap"
+          "${openldap}/libexec/slapd" "-F" configDir
           "-h" (lib.concatStringsSep " " cfg.urlList)
         ]);
         StateDirectory = [ "openldap/slapd.d" ] ++ additionalStateDirectories;
