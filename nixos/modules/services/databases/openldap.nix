@@ -3,10 +3,14 @@
 with lib;
 let
   cfg = config.services.openldap;
-  legacyOptions = [ "rootpwFile" "suffix" "dataDir" "rootdn" "rootpw" ];
   openldap = cfg.package;
-  useDefaultConfDir = cfg.configDir == null;
-  configDir = if cfg.configDir != null then cfg.configDir else "$CONFIGURATION_DIRECTORY";
+  escapeSystemd = s: replaceStrings ["%"] ["%%"] s;
+
+  legacyOptions = [ "rootpwFile" "suffix" "dataDir" "rootdn" "rootpw" ];
+  configDir =
+    if cfg.configDir != null then cfg.configDir
+    else if cfg.mutableConfig then "/var/lib/openldap/slapd.d"
+    else "$CONFIGURATION_DIRECTORY";
 
   dbSettings = filterAttrs (name: value: hasPrefix "olcDatabase=" name) cfg.settings.children;
   dataDirs = mapAttrs' (_: value: nameValuePair value.attrs.olcSuffix (removePrefix "/var/lib/openldap/" value.attrs.olcDbDirectory))
@@ -182,6 +186,16 @@ in {
         example = "/var/lib/openldap/slapd.d";
       };
 
+      mutableConfig = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Whether to allow writable on-line configuration. If `true`, the NixOS
+          settings will only be used to initialize the OpenLDAP configuration
+          if it does not exist, and are subsequently ignored.
+        '';
+      };
+
       declarativeContents = mkOption {
         type = with types; attrsOf lines;
         default = {};
@@ -259,7 +273,7 @@ in {
         in pkgs.writeShellScript "openldap-config" ''
           ${openldap}/bin/slapadd -F ${configDir} -bcn=config -l ${settingsFile}
           chgrp -R ${cfg.group} ${configDir}
-          chmod -R g+r ${configDir}
+          chmod -R ${if cfg.mutableConfig then "g+rw" else "g+r"} ${configDir}
         '';
         writeContents = let
           dataFiles = lib.mapAttrs (dn: contents: pkgs.writeText "${dn}.ldif" contents) cfg.declarativeContents;
@@ -278,10 +292,10 @@ in {
         ExecStartPre = (lib.optional (cfg.configDir == null) "+${writeConfig}") ++ [
           "${writeContents}"
         ];
-        ExecStart = lib.escapeShellArgs ([
+        ExecStart = lib.escapeShellArgs [
           "${openldap}/libexec/slapd" "-F" configDir
-          "-h" (lib.concatStringsSep " " cfg.urlList)
-        ]);
+          "-h" (escapeSystemd (lib.concatStringsSep " " cfg.urlList))
+        ];
         StateDirectory = [ "openldap/slapd.d" ] ++ additionalStateDirectories;
         StateDirectoryMode = "700";
         RuntimeDirectory = "openldap";

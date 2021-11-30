@@ -10,12 +10,6 @@ let
     objectClass: organizationalUnit
     ou: users
   '';
-  testDbExists = ''
-    machine.wait_for_unit("openldap.service")
-    machine.succeed(
-        'ldapsearch -LLL -D "cn=root,dc=example" -w notapassword -b "dc=example"',
-    )
-  '';
   manualConfig = pkgs.writeText "config.ldif" ''
     dn: cn=config
     cn: config
@@ -30,6 +24,11 @@ let
     include: file://${pkgs.openldap}/etc/schema/core.ldif
     include: file://${pkgs.openldap}/etc/schema/cosine.ldif
     include: file://${pkgs.openldap}/etc/schema/inetorgperson.ldif
+
+    dn: olcDatabase={0}config,cn=config
+    olcDatabase: {0}config
+    objectClass: olcDatabaseConfig
+    olcAccess: {0}to * by * manage stop
 
     dn: olcDatabase={1}mdb,cn=config
     objectClass: olcDatabaseConfig
@@ -48,15 +47,24 @@ in {
     environment.etc."openldap/root_password".text = "notapassword";
     services.openldap = {
       enable = true;
+      urlList = [ "ldap:///" "ldapi://%2Frun%2Fopenldap%2Fldapi" ];
       settings = {
         children = {
           "cn=schema".includes = [
-          "${pkgs.openldap}/etc/schema/core.ldif"
-          "${pkgs.openldap}/etc/schema/cosine.ldif"
-          "${pkgs.openldap}/etc/schema/inetorgperson.ldif"
-          "${pkgs.openldap}/etc/schema/nis.ldif"
-        ];
-        "olcDatabase={1}mdb" = {
+            "${pkgs.openldap}/etc/schema/core.ldif"
+            "${pkgs.openldap}/etc/schema/cosine.ldif"
+            "${pkgs.openldap}/etc/schema/inetorgperson.ldif"
+            "${pkgs.openldap}/etc/schema/nis.ldif"
+          ];
+          "olcDatabase={0}config" = {
+            attrs = {
+              objectClass = "olcDatabaseConfig";
+              olcDatabase = "{0}config";
+              # FIXME: Clean up this, in case somebody tries to copy it
+              olcAccess = "{0}to * by * manage stop";
+            };
+          };
+          "olcDatabase={1}mdb" = {
             # This tests string, base64 and path values, as well as lists of string values
             attrs = {
               objectClass = [ "olcDatabaseConfig" "olcMdbConfig" ];
@@ -76,13 +84,34 @@ in {
       };
       declarativeContents."dc=example" = dbContents;
     };
-    specialisation.manualConfigDir.configuration = { ... }: {
-      services.openldap.configDir = "/var/db/slapd.d";
+    specialisation = {
+      mutableConfig.configuration = { ... }: {
+        services.openldap.mutableConfig = true;
+      };
+      manualConfigDir.configuration = { ... }: {
+        services.openldap.configDir = "/var/db/slapd.d";
+      };
     };
   };
 
-  testScript = { nodes, ... }: let config = nodes.machine.config.system.build.toplevel; in ''
-    ${testDbExists}
+  testScript = { nodes, ... }: let
+    config = nodes.machine.config.system.build.toplevel;
+    changeRootPW = pkgs.writeText "changeRootPW.ldif" ''
+      dn: olcDatabase={1}mdb,cn=config
+      changetype: modify
+      replace: olcRootPW
+      olcRootPW: foobar
+    '';
+  in ''
+    machine.wait_for_unit("openldap.service")
+    machine.succeed('ldapsearch -LLL -D "cn=root,dc=example" -w notapassword -b "dc=example"')
+    machine.fail("ldapmodify -Y EXTERNAL -H ldapi://%2Frun%2Fopenldap%2Fldapi -f ${changeRootPW}")
+
+    with subtest("handles mutable config"):
+      machine.succeed("${config}/specialisation/mutableConfig/bin/switch-to-configuration test")
+      machine.succeed('ldapsearch -LLL -D "cn=root,dc=example" -w notapassword -b "dc=example"')
+      machine.succeed('ldapmodify -Y EXTERNAL -H ldapi://%2Frun%2Fopenldap%2Fldapi -f ${changeRootPW}')
+      machine.succeed('ldapsearch -LLL -D "cn=root,dc=example" -w foobar -b "dc=example"')
 
     with subtest("handles manual config dir"):
       machine.succeed(
@@ -92,6 +121,8 @@ in {
           "chown -R openldap:openldap /var/db/slapd.d /var/db/openldap",
           "${config}/specialisation/manualConfigDir/bin/switch-to-configuration test",
       )
-      ${testDbExists}
+      machine.succeed('ldapsearch -LLL -D "cn=root,dc=example" -w notapassword -b "dc=example"')
+      machine.succeed('ldapmodify -Y EXTERNAL -H ldapi://%2Frun%2Fopenldap%2Fldapi -f ${changeRootPW}')
+      machine.succeed('ldapsearch -LLL -D "cn=root,dc=example" -w foobar -b "dc=example"')
   '';
 })
