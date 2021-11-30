@@ -60,8 +60,7 @@ in {
             attrs = {
               objectClass = "olcDatabaseConfig";
               olcDatabase = "{0}config";
-              # FIXME: Clean up this, in case somebody tries to copy it
-              olcAccess = "{0}to * by * manage stop";
+              olcAccess = "{0}to * by dn.exact=uidNumber=0+gidNumber=0,cn=peercred,cn=external,cn=auth manage by * +0 stop";
             };
           };
           "olcDatabase={1}mdb" = {
@@ -111,6 +110,7 @@ in {
       machine.succeed("${config}/specialisation/mutableConfig/bin/switch-to-configuration test")
       machine.succeed('ldapsearch -LLL -D "cn=root,dc=example" -w notapassword -b "dc=example"')
       machine.succeed('ldapmodify -Y EXTERNAL -H ldapi://%2Frun%2Fopenldap%2Fldapi -f ${changeRootPW}')
+      machine.systemctl('restart openldap')
       machine.succeed('ldapsearch -LLL -D "cn=root,dc=example" -w foobar -b "dc=example"')
 
     with subtest("handles manual config dir"):
