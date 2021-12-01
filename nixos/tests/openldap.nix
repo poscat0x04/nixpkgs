@@ -28,7 +28,8 @@ let
     dn: olcDatabase={0}config,cn=config
     olcDatabase: {0}config
     objectClass: olcDatabaseConfig
-    olcAccess: {0}to * by * manage stop
+    olcRootDN: cn=root,cn=config
+    olcRootPW: configpassword
 
     dn: olcDatabase={1}mdb,cn=config
     objectClass: olcDatabaseConfig
@@ -47,7 +48,7 @@ in {
     environment.etc."openldap/root_password".text = "notapassword";
     services.openldap = {
       enable = true;
-      urlList = [ "ldap:///" "ldapi://%2Frun%2Fopenldap%2Fldapi" ];
+      urlList = [ "ldap:///" ];
       settings = {
         children = {
           "cn=schema".includes = [
@@ -60,7 +61,8 @@ in {
             attrs = {
               objectClass = "olcDatabaseConfig";
               olcDatabase = "{0}config";
-              olcAccess = "{0}to * by dn.exact=uidNumber=0+gidNumber=0,cn=peercred,cn=external,cn=auth manage by * +0 stop";
+              olcRootDN = "cn=root,cn=config";
+              olcRootPW = "configpassword";
             };
           };
           "olcDatabase={1}mdb" = {
@@ -90,6 +92,9 @@ in {
       manualConfigDir.configuration = { ... }: {
         services.openldap.configDir = "/var/db/slapd.d";
       };
+      localSocket.configuration = { ... }: {
+        services.openldap.urlList = [ "ldapi:///" ];
+      };
     };
   };
 
@@ -104,14 +109,17 @@ in {
   in ''
     machine.wait_for_unit("openldap.service")
     machine.succeed('ldapsearch -LLL -D "cn=root,dc=example" -w notapassword -b "dc=example"')
-    machine.fail("ldapmodify -Y EXTERNAL -H ldapi://%2Frun%2Fopenldap%2Fldapi -f ${changeRootPW}")
+    machine.fail("ldapmodify -D cn=root,cn=config -w configpassword -f ${changeRootPW}")
 
     with subtest("handles mutable config"):
       machine.succeed("${config}/specialisation/mutableConfig/bin/switch-to-configuration test")
       machine.succeed('ldapsearch -LLL -D "cn=root,dc=example" -w notapassword -b "dc=example"')
-      machine.succeed('ldapmodify -Y EXTERNAL -H ldapi://%2Frun%2Fopenldap%2Fldapi -f ${changeRootPW}')
+      machine.succeed("ldapmodify -D cn=root,cn=config -w configpassword -f ${changeRootPW}")
       machine.systemctl('restart openldap')
       machine.succeed('ldapsearch -LLL -D "cn=root,dc=example" -w foobar -b "dc=example"')
+
+    #with subtest("local IPC socket works"):
+    #  machine.succeed("${config}/specialisation/localSocket/bin/switch-to-configuration test")
 
     with subtest("handles manual config dir"):
       machine.succeed(
@@ -122,7 +130,7 @@ in {
           "${config}/specialisation/manualConfigDir/bin/switch-to-configuration test",
       )
       machine.succeed('ldapsearch -LLL -D "cn=root,dc=example" -w notapassword -b "dc=example"')
-      machine.succeed('ldapmodify -Y EXTERNAL -H ldapi://%2Frun%2Fopenldap%2Fldapi -f ${changeRootPW}')
+      machine.succeed("ldapmodify -D cn=root,cn=config -w configpassword -f ${changeRootPW}")
       machine.succeed('ldapsearch -LLL -D "cn=root,dc=example" -w foobar -b "dc=example"')
   '';
 })

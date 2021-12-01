@@ -300,6 +300,7 @@ in {
         ];
         StateDirectory = [ "openldap/slapd.d" ] ++ additionalStateDirectories;
         StateDirectoryMode = "700";
+        # TODO: Patch openldap to put the ldapi:/// socket here
         RuntimeDirectory = "openldap";
         AmbientCapabilities = [ "CAP_NET_BIND_SERVICE" ];
         CapabilityBoundingSet = [ "CAP_NET_BIND_SERVICE" ];
