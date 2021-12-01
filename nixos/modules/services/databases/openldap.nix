@@ -17,9 +17,10 @@ let
     # Can't do types.either with multiple non-overlapping submodules, so define our own
     singleLdapValueType = lib.mkOptionType rec {
       name = "LDAP";
-      # TODO: It might be worth defining a { creds = ...; } option, leveraging
+      # TODO: It might be worth defining a { secret = ...; } option, leveraging
       # systemd's LoadCredentials for secrets. That should remove the last
-      # barrier to using DynamicUser for openldap.
+      # barrier to using DynamicUser for openldap. However, this is blocked on
+      # $CREDENTIALS_DIRECTORY being available in ExecStartPre.
       description = ''
         LDAP value - either a string, or an attrset containing `path` or
         `base64`, for included values or base-64 encoded values respectively.
@@ -300,7 +301,6 @@ in {
         ];
         StateDirectory = [ "openldap/slapd.d" ] ++ additionalStateDirectories;
         StateDirectoryMode = "700";
-        # TODO: Patch openldap to put the ldapi:/// socket here
         RuntimeDirectory = "openldap";
         AmbientCapabilities = [ "CAP_NET_BIND_SERVICE" ];
         CapabilityBoundingSet = [ "CAP_NET_BIND_SERVICE" ];
