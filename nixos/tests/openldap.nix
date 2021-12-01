@@ -48,7 +48,7 @@ in {
     environment.etc."openldap/root_password".text = "notapassword";
     services.openldap = {
       enable = true;
-      urlList = [ "ldap:///" ];
+      urlList = [ "ldap:///" "ldapi:///" ];
       settings = {
         children = {
           "cn=schema".includes = [
@@ -92,9 +92,6 @@ in {
       manualConfigDir.configuration = { ... }: {
         services.openldap.configDir = "/var/db/slapd.d";
       };
-      localSocket.configuration = { ... }: {
-        services.openldap.urlList = [ "ldapi:///" ];
-      };
     };
   };
 
@@ -117,9 +114,6 @@ in {
       machine.succeed("ldapmodify -D cn=root,cn=config -w configpassword -f ${changeRootPW}")
       machine.systemctl('restart openldap')
       machine.succeed('ldapsearch -LLL -D "cn=root,dc=example" -w foobar -b "dc=example"')
-
-    #with subtest("local IPC socket works"):
-    #  machine.succeed("${config}/specialisation/localSocket/bin/switch-to-configuration test")
 
     with subtest("handles manual config dir"):
       machine.succeed(

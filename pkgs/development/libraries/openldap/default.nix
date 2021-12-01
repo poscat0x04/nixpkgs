@@ -12,6 +12,8 @@ stdenv.mkDerivation rec {
     sha256 = "sha256-V7WSVL4V0L9qmrPVFMHAV3ewISMpFTMTSofJRGj49Hs=";
   };
 
+  patches = [ ./default-socket-path.patch ];
+
   # TODO: separate "out" and "bin"
   outputs = [ "out" "dev" "man" "devdoc" ];
 
