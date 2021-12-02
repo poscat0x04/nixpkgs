@@ -10,8 +10,10 @@ let
   dbSettings = filterAttrs (name: value: hasPrefix "olcDatabase=" name) cfg.settings.children;
   dataDirs = mapAttrs' (_: value: nameValuePair value.attrs.olcSuffix (removePrefix "/var/lib/openldap/" value.attrs.olcDbDirectory))
     (lib.filterAttrs (_: value: value.attrs ? olcDbDirectory && hasPrefix "/var/lib/openldap/" value.attrs.olcDbDirectory) dbSettings);
-  declarativeDNs = attrNames cfg.declarativeContents;
   additionalStateDirectories = map (sfx: "openldap/" + sfx) (attrValues dataDirs);
+
+  dataFiles = lib.mapAttrs (dn: contents: pkgs.writeText "${dn}.ldif" contents) cfg.declarativeContents;
+  declarativeDNs = attrNames cfg.declarativeContents;
 
   ldapValueType = let
     # Can't do types.either with multiple non-overlapping submodules, so define our own
@@ -285,27 +287,20 @@ in {
           fi
           chmod -R ${if cfg.mutableConfig then "u+rw" else "u+r-w"} ${configDir}
         '';
-        writeContents = let
-          dataFiles = lib.mapAttrs (dn: contents: pkgs.writeText "${dn}.ldif" contents) cfg.declarativeContents;
-          mkLoadScript = dn: ''
-            rm -rf /var/lib/openldap/${lib.escapeShellArg (getAttr dn dataDirs)}/*
-            ${openldap}/bin/slapadd -F ${configDir} -b ${dn} -l ${getAttr dn dataFiles}
-          '';
-        in pkgs.writeShellScript "openldap-data" ''
-           set -euo pipefail
+        writeContents =  pkgs.writeShellScript "openldap-load" ''
+          set -euo pipefail
 
-           ${lib.concatStrings (map mkLoadScript declarativeDNs)}
+          rm -rf /var/lib/openldap/$2/*
+          ${openldap}/bin/slapadd -F ${configDir} -b $1 -l $3
         '';
       in {
         User = cfg.user;
         Group = cfg.group;
         Type = "forking";
         ExecStartPre =
-          (lib.optional (cfg.configDir == null) "${writeConfig}")
-          ++ [
-            "${writeContents}"
-            "${openldap}/bin/slaptest -u -F ${configDir}"
-          ];
+          (lib.optional (cfg.configDir == null) writeConfig)
+          ++ (map (dn: lib.escapeShellArgs [writeContents dn (getAttr dn dataDirs) (getAttr dn dataFiles)]) declarativeDNs)
+          ++ [ "${openldap}/bin/slaptest -u -F ${configDir}" ];
         ExecStart = lib.escapeShellArgs [
           "${openldap}/libexec/slapd" "-F" configDir
           "-h" (escapeSystemd (lib.concatStringsSep " " cfg.urlList))
