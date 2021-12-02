@@ -89,8 +89,12 @@ in {
       mutableConfig.configuration = { ... }: {
         services.openldap.mutableConfig = true;
       };
-      manualConfigDir.configuration = { ... }: {
-        services.openldap.configDir = "/var/db/slapd.d";
+      manualConfigDir = {
+        inheritParentConfig = false;
+        configuration = { ... }: {
+          services.openldap.enable = true;
+          services.openldap.configDir = "/var/db/slapd.d";
+        };
       };
     };
   };

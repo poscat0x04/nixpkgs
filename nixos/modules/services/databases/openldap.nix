@@ -272,6 +272,8 @@ in {
         writeConfig = let
           settingsFile = pkgs.writeText "config.ldif" (lib.concatStringsSep "\n" (attrsToLdif "cn=config" cfg.settings));
         in pkgs.writeShellScript "openldap-config" ''
+          set -euo pipefail
+
           ${lib.optionalString (!cfg.mutableConfig) "rm -rf ${configDir}/*"}
           if [ -z "$(ls -A ${configDir})" ]; then
             ${openldap}/bin/slapadd -F ${configDir} -bcn=config -l ${settingsFile}
@@ -285,8 +287,9 @@ in {
             ${openldap}/bin/slapadd -F ${configDir} -b ${dn} -l ${getAttr dn dataFiles}
           '';
         in pkgs.writeShellScript "openldap-data" ''
-            ${lib.concatStrings (map mkLoadScript declarativeDNs)}
-            ${openldap}/bin/slaptest -u -F ${configDir}
+           set -euo pipefail
+
+           ${lib.concatStrings (map mkLoadScript declarativeDNs)}
         '';
       in {
         User = cfg.user;
@@ -294,7 +297,10 @@ in {
         Type = "forking";
         ExecStartPre =
           (lib.optional (cfg.configDir == null) "${writeConfig}")
-          ++ [ "${writeContents}" ];
+          ++ [
+            "${writeContents}"
+            "${openldap}/bin/slaptest -u -F ${configDir}"
+          ];
         ExecStart = lib.escapeShellArgs [
           "${openldap}/libexec/slapd" "-F" configDir
           "-h" (escapeSystemd (lib.concatStringsSep " " cfg.urlList))
