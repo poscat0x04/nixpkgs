@@ -236,16 +236,21 @@ in {
   meta.maintainers = with lib.maintainers; [ mic92 kwohlfahrt ];
 
   config = mkIf cfg.enable {
-    assertions = (map (dn: {
+    assertions = [{
+      assertion = (cfg.configDir != null) -> declarativeDNs == [];
+      message = ''
+        Declarative DB contents (${dn}) are not supported with user-managed configuration directory".
+      '';
+    }] ++ (map (dn: {
       assertion = dataDirs ? "${dn}";
       message = ''
-        declarative DB ${dn} does not exist in "services.openldap.settings" or it exists but the "olcDbDirectory"
+        Declarative DB ${dn} does not exist in "services.openldap.settings" or it exists but the "olcDbDirectory"
         is not prefixed by "/var/lib/openldap/"
       '';
     }) declarativeDNs) ++ (map (dir: {
       assertion = !(hasPrefix "slapd.d" dir);
       message = ''
-        database path may not be "/var/lib/openldap/slapd.d", this path is used for configuration.
+        Database path may not be "/var/lib/openldap/slapd.d", this path is used for configuration.
       '';
     }) (attrValues dataDirs));
     environment.systemPackages = [ openldap ];
