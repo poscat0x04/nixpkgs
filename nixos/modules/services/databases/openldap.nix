@@ -3,22 +3,30 @@
 with lib;
 let
   cfg = config.services.openldap;
-  legacyOptions = [ "rootpwFile" "suffix" "dataDir" "rootdn" "rootpw" ];
   openldap = cfg.package;
-  useDefaultConfDir = cfg.configDir == null;
+  escapeSystemd = s: replaceStrings ["%"] ["%%"] s;
   configDir = if cfg.configDir != null then cfg.configDir else "/var/lib/openldap/slapd.d";
 
   dbSettings = filterAttrs (name: value: hasPrefix "olcDatabase=" name) cfg.settings.children;
   dataDirs = mapAttrs' (_: value: nameValuePair value.attrs.olcSuffix (removePrefix "/var/lib/openldap/" value.attrs.olcDbDirectory))
     (lib.filterAttrs (_: value: value.attrs ? olcDbDirectory && hasPrefix "/var/lib/openldap/" value.attrs.olcDbDirectory) dbSettings);
-  declarativeDNs = attrNames cfg.declarativeContents;
   additionalStateDirectories = map (sfx: "openldap/" + sfx) (attrValues dataDirs);
+
+  dataFiles = lib.mapAttrs (dn: contents: pkgs.writeText "${dn}.ldif" contents) cfg.declarativeContents;
+  declarativeDNs = attrNames cfg.declarativeContents;
 
   ldapValueType = let
     # Can't do types.either with multiple non-overlapping submodules, so define our own
     singleLdapValueType = lib.mkOptionType rec {
       name = "LDAP";
-      description = "LDAP value";
+      # TODO: It might be worth defining a { secret = ...; } option, leveraging
+      # systemd's LoadCredentials for secrets. That should remove the last
+      # barrier to using DynamicUser for openldap. However, this is blocked on
+      # $CREDENTIALS_DIRECTORY being available in ExecStartPre.
+      description = ''
+        LDAP value - either a string, or an attrset containing `path` or
+        `base64`, for included values or base-64 encoded values respectively.
+      '';
       check = x: lib.isString x || (lib.isAttrs x && (x ? path || x ? base64));
       merge = lib.mergeEqualOption;
     };
@@ -182,6 +190,16 @@ in {
         example = "/var/lib/openldap/slapd.d";
       };
 
+      mutableConfig = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Whether to allow writable on-line configuration. If `true`, the NixOS
+          settings will only be used to initialize the OpenLDAP configuration
+          if it does not exist, and are subsequently ignored.
+        '';
+      };
+
       declarativeContents = mkOption {
         type = with types; attrsOf lines;
         default = {};
@@ -220,16 +238,23 @@ in {
   meta.maintainers = with lib.maintainers; [ mic92 kwohlfahrt ];
 
   config = mkIf cfg.enable {
-    assertions = map (opt: {
-      assertion = ((getAttr opt cfg) != "_mkMergedOptionModule") -> (cfg.database != "_mkMergedOptionModule");
-      message = "Legacy OpenLDAP option `services.openldap.${opt}` requires `services.openldap.database` (use value \"mdb\" if unsure)";
-    }) legacyOptions ++ map (dn: {
+    assertions = [{
+      assertion = (cfg.configDir != null) -> declarativeDNs == [];
+      message = ''
+        Declarative DB contents (${dn}) are not supported with user-managed configuration directory".
+      '';
+    }] ++ (map (dn: {
       assertion = dataDirs ? "${dn}";
       message = ''
-        declarative DB ${dn} does not exist in "servies.openldap.settings" or it exists but the "olcDbDirectory"
+        Declarative DB ${dn} does not exist in "services.openldap.settings" or it exists but the "olcDbDirectory"
         is not prefixed by "/var/lib/openldap/"
       '';
-    }) declarativeDNs;
+    }) declarativeDNs) ++ (map (dir: {
+      assertion = !(hasPrefix "slapd.d" dir);
+      message = ''
+        Database path may not be "/var/lib/openldap/slapd.d", this path is used for configuration.
+      '';
+    }) (attrValues dataDirs));
     environment.systemPackages = [ openldap ];
 
     # Literal attributes must always be set
@@ -249,33 +274,38 @@ in {
       description = "LDAP server";
       wantedBy = [ "multi-user.target" ];
       after = [ "network.target" ];
-      preStart = let
-        settingsFile = pkgs.writeText "config.ldif" (lib.concatStringsSep "\n" (attrsToLdif "cn=config" cfg.settings));
-        dataFiles = lib.mapAttrs (dn: contents: pkgs.writeText "${dn}.ldif" contents) cfg.declarativeContents;
-        mkLoadScript = dn: let
-          dataDir = lib.escapeShellArg ("/var/lib/openldap/" + getAttr dn dataDirs);
-        in  ''
-          rm -rf ${dataDir}/*
-          ${openldap}/bin/slapadd -F ${lib.escapeShellArg configDir} -b ${dn} -l ${getAttr dn dataFiles}
-        '';
-      in ''
-        ${lib.optionalString useDefaultConfDir ''
-          rm -rf ${configDir}/*
-          ${openldap}/bin/slapadd -F ${configDir} -bcn=config -l ${settingsFile}
-        ''}
+      serviceConfig = let
+        # This cannot be built in a derivation, because it needs filesystem access for included files
+        writeConfig = let
+          settingsFile = pkgs.writeText "config.ldif" (lib.concatStringsSep "\n" (attrsToLdif "cn=config" cfg.settings));
+        in pkgs.writeShellScript "openldap-config" ''
+          set -euo pipefail
 
-        ${lib.concatStrings (map mkLoadScript declarativeDNs)}
-        ${openldap}/bin/slaptest -u -F ${lib.escapeShellArg configDir}
-      '';
-      serviceConfig = {
+          ${lib.optionalString (!cfg.mutableConfig) "rm -rf ${configDir}/*"}
+          if [ -z "$(ls -A ${configDir})" ]; then
+            ${openldap}/bin/slapadd -F ${configDir} -bcn=config -l ${settingsFile}
+          fi
+          chmod -R ${if cfg.mutableConfig then "u+rw" else "u+r-w"} ${configDir}
+        '';
+        writeContents =  pkgs.writeShellScript "openldap-load" ''
+          set -euo pipefail
+
+          rm -rf /var/lib/openldap/$2/*
+          ${openldap}/bin/slapadd -F ${configDir} -b $1 -l $3
+        '';
+      in {
         User = cfg.user;
         Group = cfg.group;
         Type = "forking";
-        ExecStart = lib.escapeShellArgs ([
+        ExecStartPre =
+          (lib.optional (cfg.configDir == null) writeConfig)
+          ++ (map (dn: lib.escapeShellArgs [writeContents dn (getAttr dn dataDirs) (getAttr dn dataFiles)]) declarativeDNs)
+          ++ [ "${openldap}/bin/slaptest -u -F ${configDir}" ];
+        ExecStart = lib.escapeShellArgs [
           "${openldap}/libexec/slapd" "-F" configDir
-          "-h" (lib.concatStringsSep " " cfg.urlList)
-        ]);
-        StateDirectory = [ "openldap/slapd.d" ] ++ additionalStateDirectories;
+          "-h" (escapeSystemd (lib.concatStringsSep " " cfg.urlList))
+        ];
+        StateDirectory = lib.optional (cfg.configDir == null) ([ "openldap/slapd.d" ] ++ additionalStateDirectories);
         StateDirectoryMode = "700";
         RuntimeDirectory = "openldap";
         AmbientCapabilities = [ "CAP_NET_BIND_SERVICE" ];
