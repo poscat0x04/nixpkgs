@@ -305,7 +305,7 @@ in {
           "${openldap}/libexec/slapd" "-F" configDir
           "-h" (escapeSystemd (lib.concatStringsSep " " cfg.urlList))
         ];
-        StateDirectory = [ "openldap/slapd.d" ] ++ additionalStateDirectories;
+        StateDirectory = lib.optional (cfg.configDir == null) ([ "openldap/slapd.d" ] ++ additionalStateDirectories);
         StateDirectoryMode = "700";
         RuntimeDirectory = "openldap";
         AmbientCapabilities = [ "CAP_NET_BIND_SERVICE" ];
