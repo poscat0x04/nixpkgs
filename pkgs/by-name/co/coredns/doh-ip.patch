@@ -1,0 +1,33 @@
+commit 504b5c11dd269828880b1fc353db72c971c23610
+Author: poscat <poscat@poscat.moe>
+Date:   Tue Nov 26 13:17:21 2024 +0800
+
+    Try to parse X-Real-IP header in DoH server
+    
+    to determine the requesting IP address when behind
+    a reverse proxy
+    
+    Signed-off-by: poscat <poscat@poscat.moe>
+
+diff --git a/core/dnsserver/server_https.go b/core/dnsserver/server_https.go
+index 8beab0e9e..47491fb6c 100644
+--- a/core/dnsserver/server_https.go
++++ b/core/dnsserver/server_https.go
+@@ -198,9 +198,16 @@ func (s *ServerHTTPS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+ 	// Create a DoHWriter with the correct addresses in it.
+ 	h, p, _ := net.SplitHostPort(r.RemoteAddr)
+ 	port, _ := strconv.Atoi(p)
++	realIp := r.Header.Get("X-Real-IP") // Since we might be placed behind a reverse proxy
++	ip := net.ParseIP(realIp)
++
++	if ip == nil {
++		ip = net.ParseIP(h)
++	}
++
+ 	dw := &DoHWriter{
+ 		laddr:   s.localAddr(r),
+-		raddr:   &net.TCPAddr{IP: net.ParseIP(h), Port: port},
++		raddr:   &net.TCPAddr{IP: ip, Port: port},
+ 		request: r,
+ 	}
+ 

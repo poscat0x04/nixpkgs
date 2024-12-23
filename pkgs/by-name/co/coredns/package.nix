@@ -32,6 +32,8 @@ buildGoModule (finalAttrs: {
     "man"
   ];
 
+  patches = [ ./doh-ip.patch ];
+
   overrideModAttrs = {
     # Add plugins before vendoring the modules.
     preBuild = ''
